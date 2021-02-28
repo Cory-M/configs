@@ -5,28 +5,34 @@ from statistics import mode
 import collections
 
 np.random.seed(777)
-D = '/home/keyu/keyu/retrieval/'
+D = '/home/keyu/retrieval/'
 DD = '/media/chundi/ssd/oneshot_data/UCF/'
 L2 = True
-SAMPLE = 'center_avg' # random/center_avg/center_random
-QUEUE_SIM = False
-VERSION = 'v2'
-WEIGHTS = None
+SAMPLE = 'center_random' # random/center_avg/center_random
+QUEUE_SIM = 16000
+VERSION = 'v3'
+VOTE_WEIGHTS = None
 QE = None
+DOMINANT = 0.7 # a float number between [0, 1], or None
 
 
-def my_mode(data, weights=None):
+def my_mode(data, weights=None, dominant=0):
 	# return most frequent item in the array
 	# if multiple most frequent items, return the one appears in data first 
 	if weights:
 		assert len(weights) == len(data)
 		weighted_data = [x for i, x in enumerate(data) for _ in range(weights[i])]
 		table = collections.Counter(iter(weighted_data)).most_common()
+		assert dominant == 0
+		dominant_thresh = 0
 	else:
 		table = collections.Counter(iter(data)).most_common()
+		dominant_thresh = len(data) * dominant
 	if not table:
 		return table
 	maxfreq = table[0][1]
+	if maxfreq < dominant_thresh:
+		return -1
 	for i in range(1, len(table)):
 		if table[i][1] != maxfreq:
 			table = table[:i]
@@ -95,6 +101,7 @@ def perform_re(postfix):
 	if L2:
 		train_feats /= np.expand_dims(np.sum(np.abs(train_feats) ** 2, axis=1) ** (1. / 2), axis=1)
 		val_feats /= np.expand_dims(np.sum(np.abs(val_feats) ** 2, axis=1) ** (1. / 2), axis=1)
+
 	start = time.time()
 	sims = np.matmul(val_feats, train_feats.T)
 	end = time.time()
@@ -104,16 +111,30 @@ def perform_re(postfix):
 	#ranked_sims = np.array([sims[i][I[i]] for i in range(sims.shape[0])])
 	end = time.time()
 	print('Sorting takes: {}s'.format(end - start))
-	del sims
+	if VERSION != 'v3':
+		del sims
 	#np.save('{}_sims.npy'.format(postfix), ranked_sims)
 	#np.save(DD + '{}_I.npy'.format(postfix), I)
 	print(I.shape)
 
 	if QE:
+		start = time.time()
 		topk_idx = I[:, :QE]
 		topk_feats = train_feats[topk_idx]
-		pdb.set_trace()
-#		concat_feats = np.concatenate((val_feats, topk_feats), axis=
+		concat_feats = np.concatenate(
+			(val_feats.reshape(I.shape[0], 1, -1), topk_feats), 
+			axis=1) # (N, 1+QE, 2028)
+#		qe_weights = np.arange(QE+1, 0, -1).repeat(
+#					I.shape[0]).reshape(QE+1, I.shape[0]).T.reshape(-1, QE+1, 1)
+#		val_feats = np.mean(concat_feats * qe_weights, axis=1)
+		val_feats = np.mean(concat_feats, axis=1)
+		if L2:
+			val_feats /= np.expand_dims(np.sum(np.abs(val_feats) ** 2, axis=1) ** (1. / 2), axis=1)
+		sims = np.matmul(val_feats, train_feats.T)
+		I = np.argsort(-1 * sims, axis=1)
+		end = time.time()
+		print('QE takes: {:.5f}s'.format(end-start))
+
 
 	k_list = [1, 5, 10, 20, 50, 100, 200, 500, 950]
 	
@@ -158,24 +179,52 @@ def perform_re(postfix):
 	elif VERSION == 'v2': # voting and measure by classification accuracy
 		I_label = train_class[I] #(10000, 1000)
 		pretty_print_ACC = []
+		pretty_print_COUNT = []
 		for k in k_list:
 			print(k)
 			any_correct = 0
+			all_count = 0
 			for i in range(I_label[:,:k].shape[0]):
-				if WEIGHTS == 'linear':
+				if VOTE_WEIGHTS == 'linear':
 					weights = range(k, 0, -1)
 				else:
 					weights = None
-				pred = my_mode(I_label[i, :k], weights)
+				pred = my_mode(I_label[i, :k], weights, dominant=DOMINANT)
 				if pred == val_class[i]:
 					any_correct += 1
-			pretty_print_ACC.append(any_correct / I.shape[0])
+				if pred != -1:
+					all_count += 1
+			pretty_print_COUNT.append(all_count)
+#			pretty_print_ACC.append(any_correct / I.shape[0])
+			acc = any_correct / all_count if all_count != 0 else 0
+			pretty_print_ACC.append(acc)
 		print(postfix)
-		for acc in pretty_print_ACC:
-			print('{:.3f}'.format(acc))
+		for i, acc in enumerate(pretty_print_ACC):
+			print('{:.3f}\t({}/{})'.format(acc, pretty_print_COUNT[i], I.shape[0]))
+	
+	elif VERSION == 'v3': # threshold
+		t_list = [0.99, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4]
+#		pred_list = I
+		I = I[:,0] #(10000,)
+		pretty_print_ACC = []
+		pretty_print_COUNT = []
+		for t in t_list:
+			any_correct = 0
+			all_count = 0
+			for i in range(I.shape[0]):
+				if sims[i, I[i]] > t:
+					all_count += 1
+					if train_class[I[i]] == val_class[i]:
+						any_correct += 1
+			pretty_print_COUNT.append(all_count)
+			acc = any_correct / all_count if all_count != 0 else 0
+			pretty_print_ACC.append(acc)
+		print(postfix)
+		for i, acc in enumerate(pretty_print_ACC):
+			print('({})\t{:.3f}\t({}/{})'.format(t_list[i], 
+							acc, pretty_print_COUNT[i], I.shape[0]))
 
 #postfixs = ['fs_020_semi_wo_mining', 'fs_020only_sec_loadSelfSup']
-#postfixs = ['sbn240']
-postfixs = ['fs_020only_sec_loadSelfSup']#, 'fs_020only_sec_loadSelfSup_whole'] 
+postfixs = ['fs_020only_sec_loadSelfSup', 'sbn240']
 for p in postfixs:
 	perform_re(p)
