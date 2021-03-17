@@ -3,18 +3,19 @@ import time
 import pdb
 from statistics import mode
 import collections
+import os
 
 np.random.seed(777)
-D = '/home/keyu/retrieval/'
+D = '/home/keyu/keyu/retrieval/'
 DD = '/media/chundi/ssd/oneshot_data/UCF/'
 L2 = True
-SAMPLE = 'center_random' # random/center_avg/center_random
-QUEUE_SIM = 16000
-VERSION = 'v3'
+SAMPLE = 'center_avg' # random/center_avg/center_random
+QUEUE_SIM = False
+VERSION = 'v2'
 VOTE_WEIGHTS = None
 QE = None
 DOMINANT = 0.7 # a float number between [0, 1], or None
-
+WRITE_FILE = True
 
 def my_mode(data, weights=None, dominant=0):
 	# return most frequent item in the array
@@ -80,6 +81,7 @@ def perform_re(postfix):
 	with open(D + 'queries_{}.txt'.format(postfix)) as f:
 		lines = f.readlines()
 		val_class = [int(line.split()[1]) for line in lines]
+		val_meta = [line.split('.')[0]+'.mp4' for line in lines][::30]
 	with open(D + 'candidates_{}.txt'.format(postfix)) as f:
 		lines = f.readlines()
 		train_class = [int(line.split()[1]) for line in lines]
@@ -136,7 +138,8 @@ def perform_re(postfix):
 		print('QE takes: {:.5f}s'.format(end-start))
 
 
-	k_list = [1, 5, 10, 20, 50, 100, 200, 500, 950]
+#	k_list = [1, 5, 10, 20, 50, 100, 200, 500, 950]
+	k_list = [5, 30, 40, 50, 60, 70, 100]
 	
 	if VERSION == 'v1':
 		pretty_print_MAP = []
@@ -181,9 +184,9 @@ def perform_re(postfix):
 		pretty_print_ACC = []
 		pretty_print_COUNT = []
 		for k in k_list:
-			print(k)
 			any_correct = 0
 			all_count = 0
+			info = []
 			for i in range(I_label[:,:k].shape[0]):
 				if VOTE_WEIGHTS == 'linear':
 					weights = range(k, 0, -1)
@@ -194,37 +197,65 @@ def perform_re(postfix):
 					any_correct += 1
 				if pred != -1:
 					all_count += 1
+#					line = val_meta[i] + ' ' + str(val_class[i])
+					line = val_meta[i] + ' ' + str(pred)
+					info.append(line)
 			pretty_print_COUNT.append(all_count)
-#			pretty_print_ACC.append(any_correct / I.shape[0])
 			acc = any_correct / all_count if all_count != 0 else 0
 			pretty_print_ACC.append(acc)
+			if WRITE_FILE:
+				assert all_count == len(info)
+				file_name = 'results/{}_{}_{}_{:03d}_{:.3f}_{:.4f}_{}.txt'.format(
+									postfix, VERSION, DOMINANT, k, 
+									acc, all_count/I.shape[0], I.shape[0])
+				with open(file_name,  'w') as f:
+					for line in info:
+						f.write(line+'\n')
 		print(postfix)
 		for i, acc in enumerate(pretty_print_ACC):
 			print('{:.3f}\t({}/{})'.format(acc, pretty_print_COUNT[i], I.shape[0]))
 	
 	elif VERSION == 'v3': # threshold
 		t_list = [0.99, 0.95, 0.9, 0.85, 0.8, 0.7, 0.6, 0.5, 0.4]
-#		pred_list = I
 		I = I[:,0] #(10000,)
 		pretty_print_ACC = []
 		pretty_print_COUNT = []
+
 		for t in t_list:
+			info = []
 			any_correct = 0
 			all_count = 0
 			for i in range(I.shape[0]):
 				if sims[i, I[i]] > t:
 					all_count += 1
+#					line = val_meta[i] + ' ' + str(val_class[i])
+					line = val_meta[i] + ' ' + str(train_class[I[i]])
+					info.append(line)
 					if train_class[I[i]] == val_class[i]:
 						any_correct += 1
 			pretty_print_COUNT.append(all_count)
 			acc = any_correct / all_count if all_count != 0 else 0
 			pretty_print_ACC.append(acc)
+			if WRITE_FILE:
+				assert len(info) == len(all_count)
+				file_name = 'results/{}_{}_{}_{}_{}.txt'.format(
+									postfix, VERSION, t, acc, all_count) 
+				with open(file_name, 'w') as f:
+					for line in info:
+						f.write(line+'\n')
+
 		print(postfix)
 		for i, acc in enumerate(pretty_print_ACC):
 			print('({})\t{:.3f}\t({}/{})'.format(t_list[i], 
 							acc, pretty_print_COUNT[i], I.shape[0]))
+		pdb.set_trace()
+		assert len(all_lines) == all_count
+
 
 #postfixs = ['fs_020_semi_wo_mining', 'fs_020only_sec_loadSelfSup']
-postfixs = ['fs_020only_sec_loadSelfSup', 'sbn240']
+#postfixs = ['fs_030only_sec_e80_loadSelfSup']#, 'sbn240', 'fs_020only_sec_loadSelfSup_whole']
+#postfixs = ['sbn240']
+postfixs = ['fs_020only_sec_loadSelfSup']
 for p in postfixs:
+	os.system('echo '+p+'>> file.out')
 	perform_re(p)
